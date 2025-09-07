@@ -2,9 +2,9 @@
   "family": "seneca-backend-task",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
-  "cpu": "256",
-  "memory": "512",
-  "executionRoleArn": "arn:aws:iam::941377137621:role/ecsTaskExecutionRole",
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::941377137621:role/seneca-back-ECSTaskExecutionRole-qEWiAcfOBwa9",
   "containerDefinitions": [
     {
       "name": "seneca-backend",
@@ -12,24 +12,25 @@
       "essential": true,
       "portMappings": [
         {
-          "containerPort": 8000,
+          "containerPort": 8080,
+          "hostPort": 8080,
           "protocol": "tcp"
         }
       ],
       "environment": [
-        {
-          "name": "DJANGO_SETTINGS_MODULE",
-          "value": "backend_api.settings"
-        },
-        {
-          "name": "DEBUG",
-          "value": "False"
-        }
+        { "name": "POSTGRES_USER", "value": "postgres" },
+        { "name": "DJANGO_SETTINGS_MODULE", "value": "backend_api.settings" },
+        { "name": "AWS_REGION", "value": "us-east-2" },
+        { "name": "AWS_S3_BUCKET", "value": "loadbalancerseneca" },
+        { "name": "POSTGRES_HOST", "value": "seneca-db.czuu6s8wsyz1.us-east-2.rds.amazonaws.com" },
+        { "name": "POSTGRES_PASSWORD", "value": "NovaSenhaForte123" },
+        { "name": "POSTGRES_PORT", "value": "5432" },
+        { "name": "POSTGRES_DB", "value": "postgres" }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group": "/ecs/seneca-backend",
+          "awslogs-group": "/ecs/controle-backend",
           "awslogs-region": "us-east-2",
           "awslogs-stream-prefix": "ecs"
         }
