@@ -48,19 +48,14 @@ class CRIOperacaoViewSet(viewsets.ModelViewSet):
     serializer_class = CRIOperacaoSerializer
     permission_classes = [permissions.IsAuthenticated]
 
-    # -------------------------------------------------------
-    # 🔄 UPSERT (update existing only, no creation)
-    # -------------------------------------------------------
     @action(detail=False, methods=["post"], url_path="upsert")
     def upsert(self, request):
-        """
-        POST /api/crioperacoes/upsert/
-        Body: {"unique_by": "codigo_if", "rows": [ {...}, {...}, ... ]}
-
-        Update existing rows only. Will NOT create new rows.
-        """
         rows = request.data.get("rows", [])
         unique_by = request.data.get("unique_by", "codigo_if")
+
+        # 🔎 Debug: log what we received
+        print("📥 UPLOAD rows:", rows[:5])  # só primeiros 5 para não poluir
+        print("📥 unique_by:", unique_by)
 
         if not isinstance(rows, list):
             return Response({"detail": "`rows` must be a list"}, status=400)
@@ -69,7 +64,6 @@ class CRIOperacaoViewSet(viewsets.ModelViewSet):
 
         for r in rows:
             try:
-                # ✅ Clean key (remove zero-width spaces & trim)
                 key_value = r.get(unique_by)
                 if isinstance(key_value, str):
                     key_value = key_value.replace("\u200b", "").strip()
@@ -78,11 +72,12 @@ class CRIOperacaoViewSet(viewsets.ModelViewSet):
                     errors.append(f"Missing {unique_by} in row")
                     continue
 
-                # 🔎 Fetch existing row
                 obj = CRIOperacao.objects.get(**{unique_by: key_value})
-                normalized = normalize_row_for_model(r, CRIOperacao)
 
-                # 🔄 Update all fields except id and unique key
+                # 🔎 Debug: show before/after update
+                print(f"🔄 Updating {unique_by}={key_value} with:", r)
+
+                normalized = normalize_row_for_model(r, CRIOperacao)
                 for key, value in normalized.items():
                     if key not in ["id", unique_by]:
                         setattr(obj, key, value)
@@ -101,18 +96,11 @@ class CRIOperacaoViewSet(viewsets.ModelViewSet):
             "updated": updated,
             "errors": errors,
         })
-
     # -------------------------------------------------------
     # ➕ INSERT NEW ONLY (skip if exists)
     # -------------------------------------------------------
     @action(detail=False, methods=["post"], url_path="insertnew")
     def insertnew(self, request):
-        """
-        POST /api/crioperacoes/insertnew/
-        Body: {"rows": [ {...}, {...}, ... ]}
-
-        Inserts only new rows where codigo_if and isin do not exist yet.
-        """
         rows = request.data.get("rows", [])
         if not isinstance(rows, list):
             return Response({"detail": "`rows` must be a list"}, status=400)
@@ -139,8 +127,7 @@ class CRIOperacaoViewSet(viewsets.ModelViewSet):
 
         # Deduplicate inside this batch
         seen_keys = set()
-        new_objects = []
-        skipped = 0
+        new_objects, skipped = [], 0
 
         for r in rows:
             codigo_if = r.get("codigo_if")
@@ -177,6 +164,79 @@ class CRIOperacaoViewSet(viewsets.ModelViewSet):
             CRIOperacao.objects.bulk_create(new_objects, batch_size=1000, ignore_conflicts=True)
 
         return Response({"created": created_count, "skipped": skipped})
+
+    # -------------------------------------------------------
+    # 📊 CALCULATE + RETURN UPDATED ROWS
+    # -------------------------------------------------------
+    @action(detail=False, methods=["post"], url_path="calculate")
+    def calculate(self, request):
+        """
+        Run calculation, update CRIOperacao rows in the DB,
+        and return updated duration/spread/taxa for the spreadsheet.
+        """
+        from decimal import Decimal
+        from datetime import datetime
+        from .utils.cashflow import build_cashflow_input_from_cri
+        from .utils.helpers_calcs import analyze_CRI
+
+        updated_rows = []
+
+        try:
+            for op in CRIOperacao.objects.all():
+                try:
+                    # ✅ build cashflow
+                    cri = build_cashflow_input_from_cri(op.__dict__)
+                    if not cri:
+                        continue
+
+                    # ✅ reference date = data_emissao (if exists)
+                    data_referencia = None
+                    if op.data_emissao:
+                        try:
+                            data_referencia = datetime.strptime(str(op.data_emissao), "%Y-%m-%d").date()
+                        except Exception:
+                            pass
+
+                    # ✅ run analyze_CRI
+                    calculos_cri = analyze_CRI(
+                        cri,
+                        reference_date=data_referencia,
+                        pu=1000,
+                        quantity=(op.montante_emitido / 1000 if op.montante_emitido else None),
+                    )
+
+                    taxa = calculos_cri.get("xirr")
+                    spread = calculos_cri.get("sov")
+                    duration = calculos_cri.get("macaulay_market")
+
+                    # ✅ normalize decimals
+                    taxa = Decimal(str(taxa)) if taxa is not None else None
+                    spread = Decimal(str(spread)) if spread is not None else None
+                    duration = Decimal(str(duration)) if duration is not None else None
+
+                    # ✅ save into DB
+                    op.duration = duration
+                    op.spread = spread
+                    op.taxa = taxa
+                    op.save(update_fields=["duration", "spread", "taxa"])
+
+                    updated_rows.append({
+                        "codigo_if": op.codigo_if,
+                        "duration": duration,
+                        "spread": spread,
+                        "taxa": taxa,
+                    })
+
+                except Exception as inner_e:
+                    print(f"❌ Error calculating {op.codigo_if}: {inner_e}")
+
+            return Response({"rows": updated_rows})
+
+        except Exception as e:
+            return Response(
+                {"detail": f"Error during calculation: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 # ------------------------- API: ÍNDICES -------------------------
@@ -599,9 +659,59 @@ def run_precos_view(request):
 #---------------------------------------------------------------------------------
 # API TO MAKE CALCULATIONS
 # --------------------------------------------------------------------------------
+# Map from frontend labels to DB field names
+CRI_OPERACOES_DEPARA = {
+    "Código IF": "codigo_if",
+    "Data Emissão": "data_emissao",
+    "Montante Emitido": "montante_emitido",
+    "Remuneração": "indexation",
+    "Spread a.a.": "spread_aa",
+    "Prazo (meses)": "prazo_meses",
+    "Carência Principal": "carencia_principal",
+    "Frequência Principal": "frequencia_principal",
+    "Tabela Juros": "tabela_juros",
+    "Frequência Juros": "frequencia_juros",
+    "Método Principal": "principal_method",
+    "Período Integralização": "periodo_integralizacao",
+    "Frequência Integralização": "freq_integralizacao",
+    # … add others as needed
+}
+
+
+
+def normalize_cri_op(row: dict) -> dict:
+    """Convert frontend row to DB-style dict for calculations."""
+    normalized = {}
+    for frontend_key, backend_key in CRI_OPERACOES_DEPARA.items():
+        if frontend_key in row:
+            normalized[backend_key] = row[frontend_key]
+    
+    for key in ["spread_aa", "taxa_nominal_aa"]:    
+        if key in normalized:
+            normalized[key] = float(normalized[key]) / 100 if float(normalized[key]) > 1 else float(normalized[key])
+    
+    return normalized
+
+
 # views.py
-from .models import CRIOperacao
+import json
+import traceback
 from datetime import datetime
+from decimal import Decimal
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from .models import CRIOperacao, Preco
+from .utils.cashflow import build_cashflow_input_from_cri
+from .utils.helpers_calcs import analyze_CRI
+
+
+def normalize_codigo_if(codigo_if: str) -> str:
+    """Remove espaços, caracteres invisíveis e normaliza maiúsculas."""
+    if not codigo_if:
+        return ""
+    return codigo_if.replace("\u200B", "").replace(" ", "").strip().upper()
+
+
 @csrf_exempt
 def run_calculos_view(request):
     if request.method != "POST":
@@ -611,21 +721,22 @@ def run_calculos_view(request):
         body = json.loads(request.body.decode("utf-8"))
         raw_codigos = body.get("listaCodigos", [])
 
-        print("📥 Data received from frontend:", raw_codigos[:2], f"... total={len(raw_codigos)}")
-
         if not raw_codigos:
             return JsonResponse({"error": "Nenhum código recebido"}, status=400)
 
-        # ⚡ Verifica se é o tab de preços
-        if "NUM NEGOCIOS" in raw_codigos[0] and "VOLUME" in raw_codigos[0]:
-            print("✅ Detectado tab PREÇOS")
+        results = []
 
+        # ⚡ Caso aba de PREÇOS
+        if "NUM NEGOCIOS" in raw_codigos[0] and "VOLUME" in raw_codigos[0]:
+            print("📊 Detectado aba PREÇOS. Total rows:", len(raw_codigos))
             for row in raw_codigos:
                 codigo_if = str(row.get("CÓDIGO IF", "")).replace("\u200B", "").strip()
                 if not codigo_if:
                     continue
 
                 cri_ops = list(CRIOperacao.objects.filter(codigo_if=codigo_if).values())
+                if not cri_ops:
+                    continue
 
                 # ✅ Parse data de referência
                 data_ref_str = row.get("DATA") or row.get("DATA REFERENCIA")
@@ -634,46 +745,123 @@ def run_calculos_view(request):
                     try:
                         data_referencia = datetime.strptime(data_ref_str, "%Y-%m-%d").date()
                     except ValueError:
-                        print(f"⚠️ Erro ao converter DATA: {data_ref_str}")
+                        pass
 
-                # ✅ Extrair PU (prioriza ÚLTIMO, depois MÍNIMO, depois MÁXIMO)
-                pu = row.get("PREÇO (ÚLTIMO)") or row.get("PREÇO (MÍNIMO)") or row.get("PREÇO (MÁXIMO)")
+                # ✅ Extrair PU
+                pu = (
+                    row.get("PREÇO (ÚLTIMO)")
+                    or row.get("PREÇO (MÍNIMO)")
+                    or row.get("PREÇO (MÁXIMO)")
+                )
                 pu = float(pu) if pu not in ("", None) else None
-                
-                #SO VAI TER UM MAS VAI LOOPAR SOBRE ESSE UM
+
                 for op in cri_ops:
                     try:
-                        # ✅ Extrair Quantidade
                         montante_emitido = op.get("montante_emitido")
-                        quantity = montante_emitido / 1000
+                        quantity = montante_emitido / 1000 if montante_emitido else None
                         cri = build_cashflow_input_from_cri(op)
+
                         calculos_cri = analyze_CRI(
                             cri,
                             reference_date=data_referencia,
                             pu=pu,
                             quantity=quantity,
                         )
-                        print("✅ Cálculos CRI:", calculos_cri)
-                    except Exception as calc_err:
-                        print("⚠️ Falha ao calcular CRI:", str(calc_err))
-                        return JsonResponse(
-                            {
-                                "error": "Não foi possível calcular os cálculos",
-                                "details": str(calc_err),
-                                "codigo_if": codigo_if,
-                                "data_referencia": str(data_referencia),
-                            },
-                            status=400,
+
+                        taxa = calculos_cri.get("xirr")
+                        spread = calculos_cri.get("sov")
+                        duration = calculos_cri.get("macaulay_market")
+
+                        # ✅ Normaliza valores numéricos
+                        duration = Decimal(str(duration)) if duration is not None else None
+                        spread = Decimal(str(spread)) if spread is not None else None
+                        taxa = Decimal(str(taxa)) if taxa is not None else None
+
+                        # ✅ Atualiza base de dados Preco
+                        Preco.objects.filter(codigo_if=codigo_if).update(
+                            duration=duration,
+                            spread=spread,
+                            taxa=taxa,
                         )
 
-                # 🚨 Por enquanto paramos no primeiro código IF
-                break
+                        results.append(
+                            {
+                                "codigo_if": codigo_if,
+                                "data_referencia": str(data_referencia) if data_referencia else None,
+                                "duration": duration,
+                                "spread": spread,
+                                "taxa": taxa,
+                            }
+                        )
+                    except Exception as calc_err:
+                        traceback.print_exc()
+                        return JsonResponse(
+                            {"error": str(calc_err), "codigo_if": codigo_if},
+                            status=500,
+                        )
 
-        return JsonResponse({"status": "ok", "processed": True})
+        # ⚡ Caso aba de CRI OPERAÇÕES
+        else:
+            for op in raw_codigos:
+                codigo_if = normalize_codigo_if(op.get("Código IF"))
+                remuneracao = op.get("Remuneração")
+                if not remuneracao:
+                    print("SEM REMUNERACAO")
+                    continue
+                remuneracao = str(remuneracao).strip().upper()
+                if remuneracao != "IPCA":
+                    #print("NAO FACO OUTRA CONTA")
+                    continue
+                try:
+                    # ✅ Pega Data Emissão como reference_date
+                    data_emissao_str = op.get("Data Emissão")
+                    data_referencia = None
+                    if data_emissao_str:
+                        try:
+                            data_referencia = datetime.strptime(data_emissao_str, "%Y-%m-%d").date()
+                        except ValueError:
+                            print(f"⚠️ Erro ao converter Data Emissão: {data_emissao_str}")
+                            continue
+                    # 🔄 Normaliza e calcula
+                    normalized_op = normalize_cri_op(op)
+                    montante_emitido = normalized_op.get("montante_emitido")
+                    cri = build_cashflow_input_from_cri(normalized_op)
+                    pu = 1000
+                    quantity = float(montante_emitido)/float(pu)
+
+                    calculos_cri = analyze_CRI(
+                        cri,
+                        reference_date=data_referencia,
+                    )
+                    
+
+                    taxa = calculos_cri.get("xirr") * 100
+                    spread = calculos_cri.get("sov") * 100
+                    duration = calculos_cri.get("macaulay_market") 
+        
+                    #print("Processing Código IF:", codigo_if, "Data Emissão:", data_referencia)
+        
+                    # ✅ Atualiza base de Cri operacoes
+                    CRIOperacao.objects.filter(codigo_if=codigo_if).update(
+                        duration=duration,
+                        spread=spread,
+                        taxa=taxa,
+                    )
+                    #print("Processing Código IF:", codigo_if, "Data Emissão:", data_referencia, "Taxa:", taxa, "Spread:", spread, "Duration:", duration)
+                except Exception as calc_err:
+                    traceback.print_exc()
+                    return JsonResponse(
+                        {"error": str(calc_err), "codigo_if": codigo_if},
+                        status=500,
+                    )
+
+        return JsonResponse({"status": "ok", "rows": results})
 
     except Exception as e:
-        print("❌ Error in run_calculos_view:", str(e))
+        traceback.print_exc()
         return JsonResponse({"error": str(e)}, status=500)
+
+
 
 # ------------------------- API: IPCADiario -------------------------
 
@@ -684,22 +872,40 @@ class IPCADiarioViewset(viewsets.ModelViewSet):
 
 
 # --- Endpoint: Run ALL (but exclude Investidores + Preços) ---
-def run_playwright(request):
-    results = {}
-    # Only run Lista CRIs, Índices, Taxas
-    scripts = [
-        "scripts/lista_cris.py",
-        "scripts/indices.py",
-        "scripts/taxas.py",
-    ]
+# core/views.py
+import subprocess
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
 
-    with ThreadPoolExecutor(max_workers=len(scripts)) as executor:
-        future_to_script = {executor.submit(run_script, s): s for s in scripts}
-        for future in as_completed(future_to_script):
-            script, result = future.result()
-            results[script] = result
+# core/views.py
+# core/views.py
+from django.views.decorators.csrf import csrf_exempt
+from django.http import JsonResponse
+import subprocess
 
-    return JsonResponse(results)
+@csrf_exempt
+def run_playwright_view(request):
+    if request.method == "POST":
+        try:
+            result = subprocess.run(
+                ["python", "scripts/robo.py"],  # example Playwright script
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return JsonResponse({
+                "status": "success",
+                "output": result.stdout,
+                "errors": result.stderr,
+            })
+        except subprocess.CalledProcessError as e:
+            return JsonResponse({
+                "status": "error",
+                "output": e.stdout,
+                "errors": e.stderr,
+            }, status=500)
+    return JsonResponse({"error": "Only POST allowed"}, status=405)
+
 
 @csrf_exempt
 # --- Helper: run one script ---
@@ -720,23 +926,32 @@ def run_script(script):
         return script, {"status": "error", "stderr": str(e)}
 
 # --- Endpoint: Run ALL (but exclude Investidores + Preços) ---
+@csrf_exempt
+@csrf_exempt
 def run_playwright(request):
+    print(" GOT HERE ")
+
     results = {}
-    # Only run Lista CRIs, Índices, Taxas
     scripts = [
-        "scripts/lista_cris.py",
-        "scripts/indices.py",
-        "scripts/taxas.py",
+        "playwright_scripts/fetch_uqbar_cri_to_django.py",
+        "playwright_scripts/fetch_indices.py",
+        "playwright_scripts/fetch_taxas.py",
     ]
 
     with ThreadPoolExecutor(max_workers=len(scripts)) as executor:
         future_to_script = {executor.submit(run_script, s): s for s in scripts}
         for future in as_completed(future_to_script):
             script, result = future.result()
+
+            # ✅ print captured output in Django console
+            print(f"\n---- {script} ----")
+            print("STDOUT:\n", result.get("stdout"))
+            print("STDERR:\n", result.get("stderr"))
+            print("------------------\n")
+
             results[script] = result
 
     return JsonResponse(results)
-
 
 
 '''

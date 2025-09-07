@@ -1,0 +1,39 @@
+{
+  "family": "seneca-backend-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::941377137621:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "seneca-backend",
+      "image": "941377137621.dkr.ecr.us-east-2.amazonaws.com/seneca-backend:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "DJANGO_SETTINGS_MODULE",
+          "value": "backend_api.settings"
+        },
+        {
+          "name": "DEBUG",
+          "value": "False"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/seneca-backend",
+          "awslogs-region": "us-east-2",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

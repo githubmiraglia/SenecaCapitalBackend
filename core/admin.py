@@ -42,6 +42,9 @@ class CRIOperacaoAdmin(admin.ModelAdmin):
         "metodo_principal",
         "periodo_integralizacao",
         "frequencia_integralizacao",
+        "duration",
+        "spread",
+        "taxa",
     )
 
     # (opcional) filtros e busca para facilitar a navegação
@@ -109,6 +112,9 @@ class PrecoAdmin(admin.ModelAdmin):
         "num_negocios",
         "format_volume",
         "ambiente",
+        "duration",
+        "spread",
+        "taxa",
     )
     list_filter = ("isin", "codigo_if", "classe", "ambiente")
     search_fields = ("isin", "codigo_if", "titulo")

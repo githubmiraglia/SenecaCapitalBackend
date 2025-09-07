@@ -143,7 +143,11 @@ def npv_anbima(
 
     df_curve = get_rate_structure(ref)
     if df_curve.empty:
-        raise ValueError(f"Nenhuma curva ANBIMA encontrada para {ref}")
+        # Se não encontrar a curva para a data de referência, a primeira data da base de dados
+        ref = _to_date("2011-01-03")
+        df_curve = get_rate_structure(ref)
+        print("Using fallback curve for reference date:", ref)
+        #raise ValueError(f"Nenhuma curva ANBIMA encontrada para {ref}")
     if "dias_uteis" not in df_curve.columns:
         raise KeyError("df_curve precisa ter coluna 'dias_uteis' para lookup da curva.")
 
@@ -310,23 +314,12 @@ def analyze_CRI(
         idx_ref = IPCADiario.objects.get(data=_to_date(reference_date)).index
         fator = float(idx_ref) / float(idx_ini)
         pu = pu / fator
-        print("MODIFIED PU ", pu)
-
-    # ➕ continue sua lógica de cálculos (XIRR, NPV, XSOV etc.)
-
-    print("QUANTITY ",quantity)
-    print("PU", pu)
-    print("QUANTITY * PU", float(quantity) * float(pu))
-    print("INDEXATION", security.indexation)
-    print(cashflows.head())
 
     # --- XIRR + NPV de mercado ---
     xirr, df_xirr = current_xirr(
         cashflows, reference_date, pu=pu, quantity=quantity, guess=guess
     )
 
-    cashflows.to_excel("cashflows.xlsx")
-    df_xirr.to_excel("df_xirr.xlsx")
 
     if np.isnan(xirr):
         raise ValueError("Não foi possível calcular XIRR.")

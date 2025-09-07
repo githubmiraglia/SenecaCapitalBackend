@@ -348,4 +348,3 @@ if __name__ == "__main__":
         quantity=1000,
     )
 
-    print("RESULTS:", results)

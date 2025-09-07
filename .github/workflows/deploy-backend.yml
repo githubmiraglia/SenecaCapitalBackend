@@ -1,0 +1,54 @@
+name: Deploy Backend to AWS ECS
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push Docker image
+        run: |
+          IMAGE_TAG=latest
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ECR_REPO="$ACCOUNT_ID.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/seneca-backend"
+
+          echo "🔨 Building Docker image..."
+          docker build -t $ECR_REPO:$IMAGE_TAG .
+
+          echo "⬆️ Pushing to ECR..."
+          docker push $ECR_REPO:$IMAGE_TAG
+
+      - name: Fill in new image ID in ECS task definition
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ECR_REPO="$ACCOUNT_ID.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/seneca-backend:latest"
+
+          echo "📌 Replacing container image with $ECR_REPO"
+
+          jq --arg IMAGE "$ECR_REPO" \
+             '.containerDefinitions[0].image = $IMAGE' ecs-task.json > ecs-task-updated.json
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ecs-task-updated.json
+          service: seneca-back-BackendService-PdkAHHbIVncA   # 👈 your ECS service name
+          cluster: seneca-cluster
+          wait-for-service-stability: true

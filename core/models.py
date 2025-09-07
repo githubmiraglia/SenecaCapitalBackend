@@ -37,8 +37,7 @@ class CRIOperacao(models.Model):
     # NEW FIELDS
     carencia_principal_meses = models.IntegerField(
         null=True, blank=True,
-        help_text="Período de carência em meses (0 = sem carência).",
-    )
+        help_text="Período de carência em meses (0 = sem carência).",)
 
     frequencia_principal = models.CharField(
         max_length=30, null=True, blank=True,
@@ -70,6 +69,10 @@ class CRIOperacao(models.Model):
         help_text="Frequência de integralização.",
     )
 
+    taxa = models.DecimalField(max_digits=20, decimal_places=6, null=True, blank=True)
+    spread = models.DecimalField(max_digits=20, decimal_places=6, null=True, blank=True)
+    duration = models.DecimalField(max_digits=20, decimal_places=6, null=True, blank=True)
+    
     # housekeeping
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -147,6 +150,9 @@ class Preco(models.Model):
     num_negocios = models.BigIntegerField(null=True, blank=True)
     volume = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True)
     ambiente = models.CharField(max_length=50, null=True, blank=True)
+    taxa = models.DecimalField(max_digits=20, decimal_places=6, null=True, blank=True)
+    spread = models.DecimalField(max_digits=20, decimal_places=6, null=True, blank=True)
+    duration = models.DecimalField(max_digits=20, decimal_places=6, null=True, blank=True)
 
     class Meta:
         # ✅ removed unique_together and constraints

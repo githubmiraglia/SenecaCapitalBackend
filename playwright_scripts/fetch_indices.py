@@ -83,11 +83,11 @@ def extract_anbima_data() -> pd.DataFrame:
         page.goto("https://www.anbima.com.br/pt_br/informar/curvas-de-juros-fechamento.htm", wait_until="load")
 
         # Accept cookie if present
-        try:
-            page.click('xpath=//*[@id="LGPD_ANBIMA_global_sites_text_btn"]', timeout=3000)
-            log("[COOKIE] Accepted")
-        except Exception:
-            pass
+        #try:
+        #    page.click('xpath=//*[@id="LGPD_ANBIMA_global_sites_text_btn"]', timeout=3000)
+        #    log("[COOKIE] Accepted")
+        #except Exception:
+        #    pass
 
         outer = None
         for fr in page.frames:
