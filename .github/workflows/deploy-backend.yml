@@ -35,15 +35,15 @@ jobs:
           echo "⬆️ Pushing to ECR..."
           docker push $ECR_REPO:$IMAGE_TAG
 
-      - name: Fill in new image ID in ECS task definition
+      - name: Fill in new image ID in the ECS task definition
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           ECR_REPO="$ACCOUNT_ID.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/seneca-backend:latest"
 
           echo "📌 Replacing container image with $ECR_REPO"
 
-          jq --arg IMAGE "$ECR_REPO" \
-             '.containerDefinitions[0].image = $IMAGE' ecs-task.json > ecs-task-updated.json
+          cat ecs-task.json | jq --arg IMAGE "$ECR_REPO" \
+            '.containerDefinitions[0].image = $IMAGE' > ecs-task-updated.json
 
       - name: Deploy to ECS
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
