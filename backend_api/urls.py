@@ -1,6 +1,7 @@
 # backend_api/urls.py
 from django.contrib import admin
 from django.urls import path, include
+from core.views import healthz
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
@@ -23,6 +24,7 @@ router.register(r"ipca-diario", IPCADiarioViewset, basename="ipca-diario")  # âœ
 # -------------------------------------------------
 urlpatterns = [
     path("admin/", admin.site.urls),
+    path("healthz", healthz), 
 
     # API (router-generated endpoints)
     path("api/", include(router.urls)),

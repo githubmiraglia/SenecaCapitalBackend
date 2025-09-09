@@ -43,6 +43,19 @@ from .serializers import CRIOperacaoSerializer
 from .utils.db_helpers import normalize_row_for_model
 
 
+from django.http import HttpResponse, JsonResponse
+from django.db import connections
+from django.db.utils import OperationalError
+
+def healthz(request):
+    db_conn = connections['default']
+    try:
+        db_conn.cursor()
+        return JsonResponse({"status": "ok", "db": "ok"})
+    except OperationalError:
+        return JsonResponse({"status": "error", "db": "unreachable"}, status=500)
+
+
 class CRIOperacaoViewSet(viewsets.ModelViewSet):
     queryset = CRIOperacao.objects.all().order_by("-id")
     serializer_class = CRIOperacaoSerializer
